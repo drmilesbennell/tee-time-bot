@@ -126,6 +126,14 @@ export async function gotoSheet(page, saved, target) {
 
   await page.goto(saved.url, { waitUntil: "domcontentloaded" });
 
+  // Northstar tee-time portlet (the club's current sheet): its weekday tabs
+  // only reach 7 days out, so pick the date in the jQuery-UI datepicker.
+  const dateInput = page.locator("input.hasDatepicker").first();
+  if (await dateInput.isVisible().catch(() => false)) {
+    await northstarPickDate(page, dateInput, target);
+    return;
+  }
+
   // Calendar fallback: click the target day number in a calendar widget.
   const day = String(target.d);
   const candidates = page.locator(
@@ -142,12 +150,45 @@ export async function gotoSheet(page, saved, target) {
   }
 }
 
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+async function northstarPickDate(page, dateInput, target) {
+  const want = `${pad(target.m)}/${pad(target.d)}/${target.y}`;
+  if ((await dateInput.inputValue().catch(() => "")) === want) return;
+
+  await dateInput.click().catch(() => {});
+  const picker = page.locator("#ui-datepicker-div");
+  await picker.waitFor({ state: "visible", timeout: 4000 }).catch(() => {});
+  for (let hop = 0; hop < 4; hop++) {
+    const title = (await picker.locator(".ui-datepicker-title").innerText().catch(() => ""))
+      .replace(/\s+/g, " ")
+      .trim();
+    if (title === `${MONTHS[target.m - 1]} ${target.y}`) break;
+    await picker.locator("a.ui-datepicker-next").click().catch(() => {});
+    await sleep(250);
+  }
+  await picker.locator(`a.ui-state-default:text-is("${target.d}")`).first().click().catch(() => {});
+  // Picking a day re-renders the sheet over PrimeFaces AJAX — let it settle.
+  await page.waitForLoadState("networkidle").catch(() => {});
+  await sleep(500);
+}
+
 /**
  * Read available tee times off the current sheet.
  * Returns [{ time, openSpots, locator }] in sheet order.
  */
 export async function readSlots(page, cfg) {
   const sel = cfg.selectors ?? {};
+
+  // Northstar tee-time portlet: slot rows are plain divs (time label + four
+  // seat cells), invisible to the generic clickable-time scan below.
+  if (!sel.slotTime && (await page.locator("div[id$='slotTeeDIV']").count()) > 0) {
+    return readNorthstarSlots(page);
+  }
+
   let timeEls;
   if (sel.slotTime) {
     timeEls = page.locator(sel.slotTime);
@@ -218,7 +259,7 @@ export async function bookSlot(page, slot, cfg) {
   }
 
   const submit = form
-    .locator(sel.bookSubmit || "text=/submit|book now|confirm/i")
+    .locator(sel.bookSubmit || "text=/submit|book now|confirm|reserve/i")
     .first();
   if (!(await submit.isVisible().catch(() => false))) {
     if (popup) await popup.close().catch(() => {});
@@ -293,6 +334,27 @@ export async function fillPlayers(form, cfg) {
     await sleep(150);
   }
   return report;
+}
+
+async function readNorthstarSlots(page) {
+  const rows = page.locator("div[id$='slotTeeDIV']");
+  const n = await rows.count();
+  const slots = [];
+  for (let i = 0; i < n; i++) {
+    const row = rows.nth(i);
+    const time = (await row.locator("label.custom-time-label").first().innerText().catch(() => "")).trim();
+    if (!TIME_RE.test(time)) continue;
+    // Each open seat renders an "Available" link; a full row has none.
+    const openSpots = await row.locator("[id$='allSlotsLink']").count();
+    // Click target: an enabled seat link (disabled ones render as spans),
+    // else the row's Reserve button if it's already expanded.
+    let locator = row.locator("a[id$='allSlotsLink']:not(.ui-state-disabled)").first();
+    if (!(await locator.count())) {
+      locator = row.locator("a[id$='reserve_button'], [id$='allSlotsLink']").first();
+    }
+    slots.push({ time, openSpots, locator });
+  }
+  return slots;
 }
 
 async function formContains(form, name) {
