@@ -124,11 +124,15 @@ export async function gotoSheet(page, saved, target) {
     return;
   }
 
-  await page.goto(saved.url, { waitUntil: "domcontentloaded" });
-
   // Northstar tee-time portlet (the club's current sheet): its weekday tabs
   // only reach 7 days out, so pick the date in the jQuery-UI datepicker.
-  const dateInput = page.locator("input.hasDatepicker").first();
+  // Re-picking also re-renders the slots fresh, so when we're already parked
+  // on the sheet (every strike pass after the first) skip the full reload.
+  let dateInput = page.locator("input.hasDatepicker").first();
+  if (!(await dateInput.isVisible().catch(() => false))) {
+    await page.goto(saved.url, { waitUntil: "domcontentloaded" });
+    dateInput = page.locator("input.hasDatepicker").first();
+  }
   if (await dateInput.isVisible().catch(() => false)) {
     await northstarPickDate(page, dateInput, target);
     return;
@@ -157,23 +161,42 @@ const MONTHS = [
 
 async function northstarPickDate(page, dateInput, target) {
   const want = `${pad(target.m)}/${pad(target.d)}/${target.y}`;
-  if ((await dateInput.inputValue().catch(() => "")) === want) return;
+  const t = { timeout: 2500 }; // fail in seconds, not 30s-per-step cascades
 
-  await dateInput.click().catch(() => {});
+  // The date input is readonly — the calendar opens from its trigger button.
   const picker = page.locator("#ui-datepicker-div");
-  await picker.waitFor({ state: "visible", timeout: 4000 }).catch(() => {});
+  const trigger = page.locator("button.ui-datepicker-trigger").first();
+  for (let attempt = 0; attempt < 2 && !(await picker.isVisible().catch(() => false)); attempt++) {
+    if (await trigger.isVisible().catch(() => false)) {
+      await trigger.click(t).catch(() => {});
+    } else {
+      await dateInput.click(t).catch(() => {});
+    }
+    await picker.waitFor({ state: "visible", timeout: 3000 }).catch(() => {});
+  }
+  if (!(await picker.isVisible().catch(() => false))) {
+    throw new Error("Tee-sheet datepicker didn't open — can't select the target date.");
+  }
+
   for (let hop = 0; hop < 4; hop++) {
-    const title = (await picker.locator(".ui-datepicker-title").innerText().catch(() => ""))
+    const title = (await picker.locator(".ui-datepicker-title").innerText(t).catch(() => ""))
       .replace(/\s+/g, " ")
       .trim();
     if (title === `${MONTHS[target.m - 1]} ${target.y}`) break;
-    await picker.locator("a.ui-datepicker-next").click().catch(() => {});
+    await picker.locator("a.ui-datepicker-next").click(t).catch(() => {});
     await sleep(250);
   }
-  await picker.locator(`a.ui-state-default:text-is("${target.d}")`).first().click().catch(() => {});
-  // Picking a day re-renders the sheet over PrimeFaces AJAX — let it settle.
-  await page.waitForLoadState("networkidle").catch(() => {});
-  await sleep(500);
+  // Click the day even if it's already selected: it forces a fresh AJAX
+  // render, which the strike loop relies on for up-to-date seat counts.
+  await picker.locator(`a.ui-state-default:text-is("${target.d}")`).first().click(t).catch(() => {});
+  await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+  await sleep(400);
+
+  const shown = (await dateInput.inputValue().catch(() => "")).trim();
+  if (shown !== want) {
+    // Never let a strike read (or book!) the wrong day's sheet.
+    throw new Error(`Tee sheet is showing ${shown || "an unknown date"} — couldn't switch it to ${want}.`);
+  }
 }
 
 /**
