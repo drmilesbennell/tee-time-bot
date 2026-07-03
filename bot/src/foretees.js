@@ -178,17 +178,36 @@ async function northstarPickDate(page, dateInput, target) {
     throw new Error("Tee-sheet datepicker didn't open — can't select the target date.");
   }
 
-  for (let hop = 0; hop < 4; hop++) {
-    const title = (await picker.locator(".ui-datepicker-title").innerText(t).catch(() => ""))
-      .replace(/\s+/g, " ")
-      .trim();
-    if (title === `${MONTHS[target.m - 1]} ${target.y}`) break;
-    await picker.locator("a.ui-datepicker-next").click(t).catch(() => {});
-    await sleep(250);
+  // This picker's header is month/year <select> dropdowns, not a text
+  // title — set them directly (their change handlers re-render the days).
+  const monthSel = picker.locator("select.ui-datepicker-month");
+  if (await monthSel.count()) {
+    await monthSel.selectOption(String(target.m - 1), t).catch(() => {}); // 0-based
+    const yearSel = picker.locator("select.ui-datepicker-year");
+    if (await yearSel.count()) await yearSel.selectOption(String(target.y), t).catch(() => {});
+    await sleep(300);
+  } else {
+    for (let hop = 0; hop < 4; hop++) {
+      const title = (await picker.locator(".ui-datepicker-title").innerText(t).catch(() => ""))
+        .replace(/\s+/g, " ")
+        .trim();
+      if (title === `${MONTHS[target.m - 1]} ${target.y}`) break;
+      await picker.locator("a.ui-datepicker-next").click(t).catch(() => {});
+      await sleep(250);
+    }
   }
-  // Click the day even if it's already selected: it forces a fresh AJAX
-  // render, which the strike loop relies on for up-to-date seat counts.
-  await picker.locator(`a.ui-state-default:text-is("${target.d}")`).first().click(t).catch(() => {});
+
+  // Selectable days are <a>; days outside the club's booking window render
+  // as disabled <span>s. Click the day even if it's already selected: that
+  // forces a fresh AJAX render, which the strike loop relies on.
+  const dayLink = picker.locator(`a.ui-state-default:text-is("${target.d}")`).first();
+  if (!(await dayLink.count())) {
+    throw new Error(
+      `Day ${target.d} isn't selectable in the tee-sheet calendar — ` +
+      `the club may not have opened ${want} for booking yet.`
+    );
+  }
+  await dayLink.click(t).catch(() => {});
   await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
   await sleep(400);
 
