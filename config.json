@@ -9,11 +9,16 @@
   },
 
   "want": {
-    "daysOfWeek": ["Sat", "Sun"],
+    "daysOfWeek": ["Thu"],
     "partySize": 4,
     "courses": ["Ocean"],
-    "players": [],
-    "timeWindows": [{ "start": "07:30", "end": "10:00" }],
+    "players": [
+      "Thompson, Mark",
+      "Thompson, Patti",
+      "Niccoli, Courtney",
+      "Niccoli, Anthony"
+    ],
+    "timeWindows": [{ "start": "07:00", "end": "10:00" }],
     "prefer": "earliest"
   },
 
