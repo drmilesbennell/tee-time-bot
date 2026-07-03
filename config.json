@@ -1,5 +1,5 @@
 {
-  "enabled": false,
+  "enabled": true,
 
   "club": {
     "portalLoginUrl": "https://www.newseabury.com/web/pages/login",
