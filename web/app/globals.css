@@ -1,0 +1,109 @@
+/* One page, big print, no clutter — designed to be used without reading a manual. */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --green: #1a7a3a;
+  --green-dark: #135c2b;
+  --red: #b3341f;
+  --ink: #1c2420;
+  --muted: #5c6a61;
+  --line: #d7ded9;
+  --bg: #f4f6f4;
+  --card: #ffffff;
+}
+
+body {
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 20px;
+  line-height: 1.45;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+main { max-width: 640px; margin: 0 auto; padding: 20px 16px 80px; }
+
+h1 { font-size: 30px; margin: 8px 0 2px; }
+.subtitle { color: var(--muted); font-size: 18px; margin-bottom: 20px; }
+
+section {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 20px;
+  margin-bottom: 18px;
+}
+
+section h2 { font-size: 22px; margin-bottom: 14px; }
+.hint { color: var(--muted); font-size: 17px; margin-top: 10px; }
+
+/* Master on/off */
+.master {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+}
+.master .state { font-weight: 700; font-size: 24px; }
+.switch {
+  width: 96px; height: 52px; border-radius: 26px; border: none; cursor: pointer;
+  position: relative; transition: background 0.15s; flex-shrink: 0;
+}
+.switch .knob {
+  position: absolute; top: 4px; width: 44px; height: 44px; border-radius: 50%;
+  background: #fff; transition: left 0.15s; box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+}
+.switch.on { background: var(--green); }
+.switch.on .knob { left: 48px; }
+.switch.off { background: #9aa59d; }
+.switch.off .knob { left: 4px; }
+
+/* Day chips */
+.days { display: flex; flex-wrap: wrap; gap: 10px; }
+.day {
+  min-width: 76px; padding: 14px 10px; font-size: 20px; font-weight: 600;
+  border-radius: 12px; border: 2px solid var(--line); background: #fff;
+  cursor: pointer; color: var(--muted);
+}
+.day.picked { background: var(--green); border-color: var(--green); color: #fff; }
+
+/* Time range */
+.times { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+select {
+  font-size: 20px; padding: 12px 14px; border-radius: 10px;
+  border: 2px solid var(--line); background: #fff; color: var(--ink);
+}
+
+/* Players */
+.players input {
+  width: 100%; font-size: 20px; padding: 14px; margin-bottom: 12px;
+  border: 2px solid var(--line); border-radius: 10px;
+}
+.players input:focus, select:focus, .pin input:focus { outline: 3px solid #8fc7a2; border-color: var(--green); }
+
+/* Buttons */
+button.big {
+  display: block; width: 100%; padding: 18px; font-size: 22px; font-weight: 700;
+  border: none; border-radius: 12px; cursor: pointer; color: #fff;
+}
+button.big:disabled { opacity: 0.6; cursor: default; }
+.save { background: var(--green); }
+.save:hover { background: var(--green-dark); }
+.test { background: #2d6ca3; margin-bottom: 12px; }
+.danger { background: var(--red); }
+.msg { text-align: center; font-size: 19px; margin-top: 12px; min-height: 26px; font-weight: 600; }
+.msg.good { color: var(--green); }
+.msg.bad { color: var(--red); }
+
+/* Activity list */
+.runs { list-style: none; }
+.runs li {
+  display: flex; justify-content: space-between; gap: 10px;
+  padding: 12px 4px; border-bottom: 1px solid var(--line); font-size: 18px;
+}
+.runs li:last-child { border-bottom: none; }
+.runs .when { color: var(--muted); }
+
+/* PIN screen */
+.pin { max-width: 420px; margin: 12vh auto 0; text-align: center; }
+.pin input {
+  width: 100%; font-size: 26px; padding: 16px; text-align: center;
+  border: 2px solid var(--line); border-radius: 12px; margin: 18px 0;
+}

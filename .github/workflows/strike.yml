@@ -1,0 +1,73 @@
+# Daily tee-time strike, run on GitHub's servers — no home computer needed.
+#
+# GitHub cron can start jobs several minutes late, so we schedule ~25 min
+# before the 7:00 ET release and the bot itself waits for the exact moment.
+# Two schedules cover daylight saving; MAX_WAIT_MIN makes the too-early one
+# bow out, so exactly one run strikes each morning.
+#
+# The web settings page triggers this same workflow on demand (workflow_dispatch)
+# for tests: "dry-run" looks but never clicks; "book-now" books immediately
+# (use an unpopular window, then cancel — free more than a day out).
+
+name: strike
+
+on:
+  schedule:
+    - cron: "35 10 * * *" # 06:35 ET during daylight time (EDT)
+    - cron: "35 11 * * *" # 06:35 ET during standard time (EST)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "What to do"
+        type: choice
+        options: [dry-run, book-now]
+        default: dry-run
+
+concurrency:
+  group: strike
+  cancel-in-progress: false
+
+jobs:
+  strike:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: bot
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: bot/package-lock.json
+
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      - name: Strike
+        env:
+          PORTAL_USERNAME: ${{ secrets.PORTAL_USERNAME }}
+          PORTAL_PASSWORD: ${{ secrets.PORTAL_PASSWORD }}
+          CONFIG_PATH: ../config.json
+          MAX_WAIT_MIN: 40
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ inputs.mode }}" = "book-now" ]; then
+              node src/index.js --now
+            else
+              node src/index.js --now --dry-run
+            fi
+          else
+            node src/index.js
+          fi
+
+      - name: Save screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shots-${{ github.run_id }}
+          path: bot/shots/
+          if-no-files-found: ignore
+          retention-days: 14

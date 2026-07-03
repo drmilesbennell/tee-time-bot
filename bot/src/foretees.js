@@ -1,0 +1,295 @@
+// ForeTees adapter. ForeTees skins vary per club, so every hook here is
+// best-effort with a config override (config.json "selectors"). Run
+// `npm run dry-run` once after setup: it prints exactly which slots the bot
+// sees and saves a debug snapshot to shots/ if it sees none.
+
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { sleep } from "./clock.js";
+import { matchSuggestion, lastNameOf } from "./prefs.js";
+
+const TIME_RE = /^\s*\d{1,2}:\d{2}\s*(?:AM|PM|A|P)?\s*$/i;
+
+/**
+ * Log in to the member portal fresh. Sessions saved days ago are often stale
+ * by 6:55am, so the bot always logs in on the morning of the strike.
+ */
+export async function portalLogin(page, cfg) {
+  const { portalLoginUrl } = cfg.club;
+  const sel = cfg.selectors ?? {};
+  await page.goto(portalLoginUrl, { waitUntil: "domcontentloaded" });
+
+  const user = page.locator(sel.portalUser || "input[type='text']").first();
+  const pass = page.locator(sel.portalPass || "input[type='password']").first();
+  await user.fill(cfg.credentials.username);
+  await pass.fill(cfg.credentials.password);
+
+  await Promise.all([
+    page.waitForLoadState("domcontentloaded"),
+    page
+      .locator(sel.portalSubmit || "button[type='submit'], input[type='submit']")
+      .first()
+      .click(),
+  ]);
+
+  // Still seeing a password box means the login failed.
+  await sleep(1000);
+  if (await page.locator("input[type='password']").first().isVisible().catch(() => false)) {
+    throw new Error("Portal login appears to have failed — check PORTAL_USERNAME / PORTAL_PASSWORD in .env");
+  }
+}
+
+/**
+ * From the logged-in portal landing page, find the way to the ForeTees tee
+ * sheet without any pre-captured URL (needed for headless/CI runs where
+ * `npm run login` never happened). Clicks a "Tee Times"-ish link, follows
+ * whatever SSO redirect or popup results, and returns the sheet page plus
+ * a saved {url, template} in the same shape login.js produces.
+ */
+export async function discoverSheet(page) {
+  const link = page
+    .locator("a", { hasText: /tee\s*.?times?|foretees|golf reservations/i })
+    .first();
+  if (await link.isVisible().catch(() => false)) {
+    const popupPromise = page.context().waitForEvent("page", { timeout: 5000 }).catch(() => null);
+    await link.click().catch(() => {});
+    await popupPromise;
+  }
+  await sleep(2000); // let SSO redirects settle
+
+  const pages = page.context().pages();
+  const sheetPage =
+    pages.findLast((p) => /foretees\.com/i.test(p.url())) ?? pages[pages.length - 1];
+  await sheetPage.waitForLoadState("domcontentloaded").catch(() => {});
+  const url = sheetPage.url();
+  return { page: sheetPage, saved: { url, template: templatizeUrl(url) } };
+}
+
+/** If a URL embeds the currently-viewed date, swap it for a placeholder. */
+export function templatizeUrl(u) {
+  const ymd = u.match(/(20\d{2})(0[1-9]|1[0-2])([0-2]\d|3[01])/);
+  if (ymd) return u.replace(ymd[0], "{YYYYMMDD}");
+  const mdy = u.match(/(0[1-9]|1[0-2])%2F([0-2]\d|3[01])%2F(20\d{2})/i);
+  if (mdy) return u.replace(mdy[0], "{MM/DD/YYYY}");
+  return null;
+}
+
+/**
+ * Navigate to the ForeTees tee sheet for `target` ({y,m,d,iso}).
+ * `saved` is what login.js captured: { url, template } — if the captured URL
+ * contained its date, we swap the target date straight into it; otherwise we
+ * open the sheet and click the day on the calendar.
+ */
+export async function gotoSheet(page, saved, target) {
+  if (saved.template) {
+    const url = saved.template
+      .replaceAll("{YYYYMMDD}", `${target.y}${pad(target.m)}${pad(target.d)}`)
+      .replaceAll("{MM/DD/YYYY}", `${pad(target.m)}%2F${pad(target.d)}%2F${target.y}`);
+    await page.goto(url, { waitUntil: "domcontentloaded" });
+    return;
+  }
+
+  await page.goto(saved.url, { waitUntil: "domcontentloaded" });
+
+  // Calendar fallback: click the target day number in a calendar widget.
+  const day = String(target.d);
+  const candidates = page.locator(
+    `td a:text-is("${day}"), a:text-is("${day}"), td:text-is("${day}")`
+  );
+  const n = await candidates.count();
+  for (let i = 0; i < n; i++) {
+    const el = candidates.nth(i);
+    if (await el.isVisible().catch(() => false)) {
+      await el.click().catch(() => {});
+      await page.waitForLoadState("domcontentloaded").catch(() => {});
+      return;
+    }
+  }
+}
+
+/**
+ * Read available tee times off the current sheet.
+ * Returns [{ time, openSpots, locator }] in sheet order.
+ */
+export async function readSlots(page, cfg) {
+  const sel = cfg.selectors ?? {};
+  let timeEls;
+  if (sel.slotTime) {
+    timeEls = page.locator(sel.slotTime);
+  } else {
+    // Any clickable element whose text is a bare time ("8:07 AM").
+    timeEls = page.locator("a, button, [onclick], input[type='button']");
+  }
+
+  const count = await timeEls.count();
+  const slots = [];
+  for (let i = 0; i < count; i++) {
+    const el = timeEls.nth(i);
+    const text = (await el.innerText().catch(() => "")) || (await el.inputValue().catch(() => ""));
+    if (!TIME_RE.test(text)) continue;
+
+    // Count open seats in the surrounding row if we can see them; if the
+    // sheet doesn't say, report null and let the booking attempt find out.
+    let openSpots = null;
+    let rowText = await el.locator("xpath=ancestor::tr[1]").first().innerText().catch(() => "");
+    if (!rowText) {
+      rowText = await el
+        .locator("xpath=ancestor::*[contains(@class,'row')][1]")
+        .first()
+        .innerText()
+        .catch(() => "");
+    }
+    if (rowText) {
+      const opens = rowText.match(/\bopen\b/gi);
+      if (opens) openSpots = opens.length;
+    }
+
+    slots.push({ time: text.trim(), openSpots, locator: el });
+  }
+  return slots;
+}
+
+/**
+ * Attempt to book one slot, entering every configured player name into the
+ * booking form (the club drops bookings whose names aren't in within 5
+ * minutes — we put them in within seconds, in the same transaction).
+ *
+ * Returns { success, players } where players is a per-name report:
+ * "already-listed" | "picked" (chosen from roster autocomplete) |
+ * "typed" (no autocomplete seen; text left in the box) | "tbd-fallback".
+ */
+export async function bookSlot(page, slot, cfg) {
+  const sel = cfg.selectors ?? {};
+  const partySize = cfg.want?.partySize ?? 4;
+
+  // The booking form may open as a popup window or in-page.
+  const popupPromise = page.context().waitForEvent("page", { timeout: 4000 }).catch(() => null);
+  await slot.locator.click();
+  const popup = await popupPromise;
+  const form = popup ?? page;
+  await form.waitForLoadState("domcontentloaded").catch(() => {});
+  await sleep(300);
+
+  const players = await fillPlayers(form, cfg);
+
+  // Any seat we couldn't put a name in gets TBD so the slot is still held.
+  const unfilled = partySize - players.filter((p) => p.how !== "failed").length;
+  const tbd = form.locator(sel.tbdButton || "text=/^TBD$/i");
+  for (let i = 0; i < Math.max(unfilled, 0); i++) {
+    const btn = tbd.first();
+    if (!(await btn.isVisible().catch(() => false))) break;
+    await btn.click().catch(() => {});
+    await sleep(120);
+  }
+
+  const submit = form
+    .locator(sel.bookSubmit || "text=/submit|book now|confirm/i")
+    .first();
+  if (!(await submit.isVisible().catch(() => false))) {
+    if (popup) await popup.close().catch(() => {});
+    return { success: false, players };
+  }
+  await submit.click();
+  await sleep(1200);
+
+  // Some skins ask "are you sure?" — accept anything that looks like yes.
+  const confirmBtn = form.locator("text=/^(yes|ok|continue|confirm)$/i").first();
+  if (await confirmBtn.isVisible().catch(() => false)) {
+    await confirmBtn.click().catch(() => {});
+    await sleep(1200);
+  }
+
+  const bodyText = await form.locator("body").innerText().catch(() => "");
+  const success = /confirm(ed|ation)|success|has been booked|your tee time/i.test(bodyText);
+  if (popup && !success) await popup.close().catch(() => {});
+  return { success, players };
+}
+
+/**
+ * Enter each configured player into the booking form. ForeTees player rows
+ * are text inputs backed by a roster autocomplete: type a name, pick the
+ * matching member from the dropdown. A name that's already on the form
+ * (e.g. the logged-in member auto-added as player 1) is skipped.
+ */
+export async function fillPlayers(form, cfg) {
+  const sel = cfg.selectors ?? {};
+  const wanted = cfg.want?.players ?? [];
+  const report = [];
+
+  for (const name of wanted) {
+    if (await formContains(form, name)) {
+      report.push({ name, how: "already-listed" });
+      continue;
+    }
+    const input = await firstEmptyInput(form, sel.playerInput || "input[type='text']");
+    if (!input) {
+      report.push({ name, how: "failed" });
+      continue;
+    }
+
+    await input.click().catch(() => {});
+    // Search the way a human does: type the LAST name key-by-key (rosters
+    // are "Last, First", so this fires the autocomplete regardless of how
+    // the name was written in config), then pick the matching member.
+    await input.pressSequentially(lastNameOf(name), { delay: 30 }).catch(() => {});
+
+    const suggestions = form.locator(
+      sel.suggestionItem ||
+        ".ui-autocomplete li, .ui-menu-item, ul[class*='autocomplete' i] li, [class*='suggest' i] li"
+    );
+    await suggestions.first().waitFor({ state: "visible", timeout: 1500 }).catch(() => {});
+    const texts = await suggestions.allInnerTexts().catch(() => []);
+    const idx = matchSuggestion(texts, name);
+
+    if (idx >= 0) {
+      await suggestions.nth(idx).click().catch(() => {});
+      report.push({ name, how: "picked" });
+    } else if (texts.length > 0) {
+      // Autocomplete offered options but none matched this name — don't
+      // book a stranger; clear the box and let the TBD fallback hold the seat.
+      await input.fill("").catch(() => {});
+      report.push({ name, how: "failed" });
+    } else {
+      // No autocomplete on this skin — type the full name and leave it.
+      await input.fill("").catch(() => {});
+      await input.pressSequentially(name, { delay: 30 }).catch(() => {});
+      report.push({ name, how: "typed" });
+    }
+    await sleep(150);
+  }
+  return report;
+}
+
+async function formContains(form, name) {
+  const want = name.toLowerCase();
+  const text = await form.locator("body").innerText().catch(() => "");
+  if (text.toLowerCase().includes(want)) return true;
+  const values = await form
+    .locator("input")
+    .evaluateAll((els) => els.map((e) => e.value || ""))
+    .catch(() => []);
+  return values.some((v) => v.toLowerCase().includes(want));
+}
+
+async function firstEmptyInput(form, selector) {
+  const inputs = form.locator(selector);
+  const n = await inputs.count();
+  for (let i = 0; i < n; i++) {
+    const el = inputs.nth(i);
+    if (!(await el.isVisible().catch(() => false))) continue;
+    if ((await el.inputValue().catch(() => "x")) === "") return el;
+  }
+  return null;
+}
+
+export async function dumpDebug(page, cfg, label) {
+  const dir = path.resolve(cfg.browser?.screenshotDir || "shots");
+  mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  await page.screenshot({ path: path.join(dir, `${label}-${stamp}.png`), fullPage: true }).catch(() => {});
+  const html = await page.content().catch(() => "");
+  writeFileSync(path.join(dir, `${label}-${stamp}.html`), html);
+  return dir;
+}
+
+const pad = (n) => String(n).padStart(2, "0");

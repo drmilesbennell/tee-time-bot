@@ -1,0 +1,20 @@
+{
+  "name": "tee-time-bot",
+  "version": "1.0.0",
+  "description": "Automated ForeTees tee-time sniper for The Club at New Seabury",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "login": "node src/login.js",
+    "run": "node src/index.js",
+    "dry-run": "node src/index.js --dry-run --now",
+    "strike-now": "node src/index.js --now",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
