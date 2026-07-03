@@ -41,6 +41,6 @@
     "tbdButton": "text=/^TBD$/i",
     "playerInput": "input[type='text']",
     "suggestionItem": ".ui-autocomplete li, .ui-menu-item, ul[class*='autocomplete' i] li, [class*='suggest' i] li",
-    "bookSubmit": "text=/submit|book now|confirm|reserve/i"
+    "bookSubmit": "text=/submit|\\bbook\\b|confirm|reserve/i"
   }
 }
