@@ -22,6 +22,11 @@ on:
         type: choice
         options: [dry-run, book-now]
         default: dry-run
+      date:
+        description: "Target date YYYY-MM-DD (optional — default is today + 14 days)"
+        type: string
+        required: false
+        default: ""
 
 concurrency:
   group: strike
@@ -54,11 +59,14 @@ jobs:
           MAX_WAIT_MIN: 40
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ "${{ inputs.mode }}" = "book-now" ]; then
-              node src/index.js --now
-            else
-              node src/index.js --now --dry-run
+            ARGS="--now"
+            if [ "${{ inputs.mode }}" != "book-now" ]; then
+              ARGS="$ARGS --dry-run"
             fi
+            if [ -n "${{ inputs.date }}" ]; then
+              ARGS="$ARGS --date=${{ inputs.date }}"
+            fi
+            node src/index.js $ARGS
           else
             node src/index.js
           fi
