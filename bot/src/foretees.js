@@ -19,7 +19,32 @@ export async function portalLogin(page, cfg) {
   const sel = cfg.selectors ?? {};
   await page.goto(portalLoginUrl, { waitUntil: "domcontentloaded" });
 
-  const user = page.locator(sel.portalUser || "input[type='text']").first();
+  const userSel = sel.portalUser || "input[type='text']";
+  let user = page.locator(userSel).first();
+  await user.waitFor({ state: "visible", timeout: 5000 }).catch(() => {});
+
+  // The club has moved its login page before (the old /club/scripts .asp URL
+  // now redirects to a formless "Not Found" page). If no login field shows
+  // up, follow the site's own Member Login link before giving up.
+  if (!(await user.isVisible().catch(() => false))) {
+    const memberLink = page
+      .locator("a[href*='login' i], a:has-text('Member Login'), a:has-text('Sign In')")
+      .first();
+    if (await memberLink.isVisible().catch(() => false)) {
+      await memberLink.click().catch(() => {});
+      await page.waitForLoadState("domcontentloaded").catch(() => {});
+      user = page.locator(userSel).first();
+      await user.waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
+    }
+  }
+  if (!(await user.isVisible().catch(() => false))) {
+    throw new Error(
+      `Login form not found: no visible ${userSel} at ${page.url()} ` +
+      "(club.portalLoginUrl may be stale — find the current member login page " +
+      "and update it, or selectors.portalUser, in config.json)"
+    );
+  }
+
   const pass = page.locator(sel.portalPass || "input[type='password']").first();
   await user.fill(cfg.credentials.username);
   await pass.fill(cfg.credentials.password);
@@ -54,6 +79,16 @@ export async function discoverSheet(page) {
     const popupPromise = page.context().waitForEvent("page", { timeout: 5000 }).catch(() => null);
     await link.click().catch(() => {});
     await popupPromise;
+  } else {
+    // Nav items tucked in collapsed/hover menus can't be clicked — go by href.
+    const href =
+      (await link.getAttribute("href").catch(() => null)) ??
+      (await page.locator("a[href*='foretees' i]").first().getAttribute("href").catch(() => null));
+    if (href && !/^(javascript:|#)/i.test(href)) {
+      await page
+        .goto(new URL(href, page.url()).href, { waitUntil: "domcontentloaded" })
+        .catch(() => {});
+    }
   }
   await sleep(2000); // let SSO redirects settle
 

@@ -2,7 +2,7 @@
   "enabled": false,
 
   "club": {
-    "portalLoginUrl": "https://www.newseabury.com/club/scripts/login/login.asp",
+    "portalLoginUrl": "https://www.newseabury.com/web/pages/login",
     "timezone": "America/New_York",
     "releaseTime": "07:00:00",
     "bookingHorizonDays": 14
@@ -33,9 +33,9 @@
   },
 
   "selectors": {
-    "portalUser": "input[name*='user' i], input[type='text']",
+    "portalUser": "input[name*='LoginPortlet_login'], input[name*='user' i], input[type='text']",
     "portalPass": "input[type='password']",
-    "portalSubmit": "button[type='submit'], input[type='submit'], input[type='image']",
+    "portalSubmit": "button.btn-sign-in, button[type='submit'], input[type='submit'], input[type='image']",
     "slotTime": "",
     "tbdButton": "text=/^TBD$/i",
     "playerInput": "input[type='text']",
