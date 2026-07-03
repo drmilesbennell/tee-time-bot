@@ -112,7 +112,7 @@ async function main() {
       const found = await discoverSheet(page);
       sheetPage = found.page;
       saved = found.saved;
-      if (!/foretees\.com/i.test(saved.url) && !saved.template) {
+      if (!/foretees\.com|tee.?time/i.test(saved.url) && !saved.template) {
         log(`WARNING: couldn't confirm a ForeTees page (landed on ${saved.url}) — proceeding, but if this fails run \`npm run login\` once to capture the sheet URL.`);
       }
       log(`Sheet: ${saved.template ?? saved.url}`);
