@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const COURSES = ["Ocean", "Dunes"];
 
 function timeOptions() {
   const opts = [];
@@ -100,6 +101,13 @@ export default function Page() {
         ? cfg.daysOfWeek.filter((x) => x !== d)
         : [...cfg.daysOfWeek, d],
     });
+
+  const toggleCourse = (c) => {
+    const cur = cfg.courses ?? ["Ocean"];
+    const next = cur.includes(c) ? cur.filter((x) => x !== c) : [...cur, c];
+    // Always keep at least one course picked.
+    if (next.length) setCfg({ ...cfg, courses: next });
+  };
 
   const save = async () => {
     setBusy(true);
@@ -200,6 +208,22 @@ export default function Page() {
           </select>
         </div>
         <p className="hint">It grabs the earliest open time in this range — currently {label(cfg.window.start)} to {label(cfg.window.end)}.</p>
+      </section>
+
+      <section>
+        <h2>Which course</h2>
+        <div className="days">
+          {COURSES.map((c) => (
+            <button
+              key={c}
+              className={`day ${(cfg.courses ?? ["Ocean"]).includes(c) ? "picked" : ""}`}
+              onClick={() => toggleCourse(c)}
+            >
+              {c}
+            </button>
+          ))}
+        </div>
+        <p className="hint">Pick one or both. With both picked, it grabs the best time on either course.</p>
       </section>
 
       <section className="players">
