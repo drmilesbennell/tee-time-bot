@@ -3,6 +3,7 @@ import "./globals.css";
 export const metadata = {
   title: "New Seabury Tee Times",
   description: "Automatic tee-time booking",
+  robots: { index: false, follow: false },
 };
 
 export default function RootLayout({ children }) {
