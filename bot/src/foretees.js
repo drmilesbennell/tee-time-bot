@@ -333,6 +333,18 @@ export async function bookSlot(page, slot, cfg) {
   await form.waitForLoadState("domcontentloaded").catch(() => {});
   await sleep(300);
 
+  // Northstar booking form ("Tee Time" / Player Information): a 1–4 PLAYERS
+  // selector controls how many name rows exist — pick our party size first.
+  if (await form.locator("text=/player information/i").count().catch(() => 0)) {
+    const sizeBtn = form.getByText(String(partySize), { exact: true }).first();
+    if (await sizeBtn.isVisible().catch(() => false)) {
+      await sizeBtn.click().catch(() => {});
+      await sleep(600); // rows render over AJAX
+    }
+    // First live look at this form — save it so selectors can be tuned.
+    await dumpDebug(form, cfg, "booking-form").catch(() => {});
+  }
+
   const players = await fillPlayers(form, cfg);
 
   // Any seat we couldn't put a name in gets TBD so the slot is still held.
@@ -346,7 +358,7 @@ export async function bookSlot(page, slot, cfg) {
   }
 
   const submit = form
-    .locator(sel.bookSubmit || "text=/submit|book now|confirm|reserve/i")
+    .locator(sel.bookSubmit || "text=/submit|\\bbook\\b|confirm|reserve/i")
     .first();
   if (!(await submit.isVisible().catch(() => false))) {
     if (popup) await popup.close().catch(() => {});
@@ -472,6 +484,11 @@ async function firstEmptyInput(form, selector) {
   for (let i = 0; i < n; i++) {
     const el = inputs.nth(i);
     if (!(await el.isVisible().catch(() => false))) continue;
+    // Player rows carry contact fields too — never type a name into those.
+    const meta = await el
+      .evaluate((e) => `${e.id} ${e.name} ${e.placeholder} ${e.getAttribute("aria-label") || ""}`)
+      .catch(() => "");
+    if (/phone|email|cell/i.test(meta)) continue;
     if ((await el.inputValue().catch(() => "x")) === "") return el;
   }
   return null;
