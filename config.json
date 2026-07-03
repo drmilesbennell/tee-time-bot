@@ -11,6 +11,7 @@
   "want": {
     "daysOfWeek": ["Sat", "Sun"],
     "partySize": 4,
+    "courses": ["Ocean"],
     "players": [],
     "timeWindows": [{ "start": "07:30", "end": "10:00" }],
     "prefer": "earliest"

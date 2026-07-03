@@ -115,7 +115,7 @@ export function templatizeUrl(u) {
  * contained its date, we swap the target date straight into it; otherwise we
  * open the sheet and click the day on the calendar.
  */
-export async function gotoSheet(page, saved, target) {
+export async function gotoSheet(page, saved, target, cfg) {
   if (saved.template) {
     const url = saved.template
       .replaceAll("{YYYYMMDD}", `${target.y}${pad(target.m)}${pad(target.d)}`)
@@ -134,6 +134,7 @@ export async function gotoSheet(page, saved, target) {
     dateInput = page.locator("input.hasDatepicker").first();
   }
   if (await dateInput.isVisible().catch(() => false)) {
+    await northstarSelectCourses(page, cfg?.want?.courses);
     await northstarPickDate(page, dateInput, target);
     return;
   }
@@ -158,6 +159,50 @@ const MONTHS = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December",
 ];
+
+/**
+ * Ensure exactly the wanted courses are ticked in the sheet's
+ * "Select Course(s)" menu (a PrimeFaces checkbox dropdown). Only checked
+ * courses render slot sections. Empty/missing `wanted` leaves the site's
+ * own selection alone.
+ */
+async function northstarSelectCourses(page, wanted) {
+  if (!wanted?.length) return;
+  const t = { timeout: 2500 };
+  const want = wanted.map((c) => String(c).trim().toLowerCase());
+
+  const trigger = page.locator(".ui-selectcheckboxmenu-trigger").first();
+  if (!(await trigger.isVisible().catch(() => false))) return; // no course menu
+  const panel = page.locator(".ui-selectcheckboxmenu-panel").last();
+  if (!(await panel.isVisible().catch(() => false))) {
+    await trigger.click(t).catch(() => {});
+    await panel.waitFor({ state: "visible", timeout: 3000 }).catch(() => {});
+  }
+
+  const items = panel.locator("li.ui-selectcheckboxmenu-item");
+  const n = await items.count();
+  let changed = false;
+  for (let i = 0; i < n; i++) {
+    const item = items.nth(i);
+    const name = ((await item.locator("label").innerText(t).catch(() => "")) || "").trim().toLowerCase();
+    if (!name) continue;
+    const checked = /ui-selectcheckboxmenu-checked/.test(
+      (await item.getAttribute("class").catch(() => "")) || ""
+    );
+    if (checked !== want.includes(name)) {
+      await item.locator(".ui-chkbox-box").first().click(t).catch(() => {});
+      changed = true;
+      await sleep(300); // each toggle re-renders the sheet over AJAX
+    }
+  }
+
+  await panel.locator(".ui-selectcheckboxmenu-close").first().click(t).catch(() => {});
+  await page.keyboard.press("Escape").catch(() => {});
+  if (changed) {
+    await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+    await sleep(300);
+  }
+}
 
 async function northstarPickDate(page, dateInput, target) {
   const want = `${pad(target.m)}/${pad(target.d)}/${target.y}`;
@@ -228,7 +273,7 @@ export async function readSlots(page, cfg) {
   // Northstar tee-time portlet: slot rows are plain divs (time label + four
   // seat cells), invisible to the generic clickable-time scan below.
   if (!sel.slotTime && (await page.locator("div[id$='slotTeeDIV']").count()) > 0) {
-    return readNorthstarSlots(page);
+    return readNorthstarSlots(page, cfg);
   }
 
   let timeEls;
@@ -378,12 +423,23 @@ export async function fillPlayers(form, cfg) {
   return report;
 }
 
-async function readNorthstarSlots(page) {
+async function readNorthstarSlots(page, cfg) {
+  // Each checked course renders its own section; map section index -> name
+  // so slots carry their course (and unwanted courses can be filtered out).
+  const wantCourses = (cfg?.want?.courses ?? []).map((c) => String(c).trim().toLowerCase());
+  const headings = (await page.locator("label.course-slots-heading").allInnerTexts().catch(() => []))
+    .map((h) => h.trim());
+
   const rows = page.locator("div[id$='slotTeeDIV']");
   const n = await rows.count();
   const slots = [];
   for (let i = 0; i < n; i++) {
     const row = rows.nth(i);
+    const id = (await row.getAttribute("id").catch(() => "")) || "";
+    const section = id.match(/teeTimeCourses:(\d+):/);
+    const course = section ? headings[Number(section[1])] ?? null : null;
+    if (wantCourses.length && course && !wantCourses.includes(course.toLowerCase())) continue;
+
     const time = (await row.locator("label.custom-time-label").first().innerText().catch(() => "")).trim();
     if (!TIME_RE.test(time)) continue;
     // Each open seat renders an "Available" link; a full row has none.
@@ -394,7 +450,7 @@ async function readNorthstarSlots(page) {
     if (!(await locator.count())) {
       locator = row.locator("a[id$='reserve_button'], [id$='allSlotsLink']").first();
     }
-    slots.push({ time, openSpots, locator });
+    slots.push({ time, openSpots, course, locator });
   }
   return slots;
 }

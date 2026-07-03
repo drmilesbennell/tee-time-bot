@@ -118,7 +118,7 @@ async function main() {
       log(`Sheet: ${saved.template ?? saved.url}`);
     }
     log("Opening tee sheet for the target date...");
-    await gotoSheet(sheetPage, saved, target);
+    await gotoSheet(sheetPage, saved, target, cfg);
 
     if (strikeAt) {
       log(`Armed. Striking at ${new Date(strikeAt).toISOString()}`);
@@ -130,14 +130,16 @@ async function main() {
     let attempt = 0;
     while (Date.now() < deadline) {
       attempt++;
-      await gotoSheet(sheetPage, saved, target);
+      await gotoSheet(sheetPage, saved, target, cfg);
       const slots = await readSlots(sheetPage, cfg);
       const ranked = rankSlots(slots, cfg.want.timeWindows, {
         partySize: cfg.want.partySize,
         prefer: cfg.want.prefer,
       });
       log(`Pass ${attempt}: ${slots.length} times on sheet, ${ranked.length} match your windows` +
-          (ranked.length ? ` — best: ${ranked.slice(0, 3).map((s) => s.time).join(", ")}` : ""));
+          (ranked.length
+            ? ` — best: ${ranked.slice(0, 3).map((s) => s.time + (s.course ? ` (${s.course})` : "")).join(", ")}`
+            : ""));
 
       if (DRY) {
         if (!slots.length) {
@@ -149,14 +151,14 @@ async function main() {
       }
 
       for (const slot of ranked.slice(0, 3)) {
-        log(`Attempting ${slot.time}...`);
+        log(`Attempting ${slot.time}${slot.course ? ` on ${slot.course}` : ""}...`);
         const result = await bookSlot(sheetPage, slot, cfg);
         if (result.success) {
           await dumpDebug(sheetPage, cfg, `booked-${target.iso}`);
           const roster = result.players
             .map((p) => `${p.name} (${p.how})`)
             .join(", ");
-          log(`Booked ${slot.time}. Players: ${roster || "(none configured)"}`);
+          log(`Booked ${slot.time}${slot.course ? ` on ${slot.course}` : ""}. Players: ${roster || "(none configured)"}`);
           const failed = result.players.filter((p) => p.how === "failed");
           const typed = result.players.filter((p) => p.how === "typed");
           if (failed.length || typed.length) {
@@ -164,11 +166,11 @@ async function main() {
             if (failed.length) parts.push(`no roster match, left as TBD: ${failed.map((p) => p.name).join(", ")}`);
             if (typed.length) parts.push(`typed but not confirmed against the roster: ${typed.map((p) => p.name).join(", ")}`);
             await notify(cfg, "⛳ Booked — VERIFY NAMES NOW",
-              `${target.iso} at ${slot.time} is yours, but check the players (${parts.join("; ")}). ` +
+              `${target.iso} at ${slot.time}${slot.course ? ` on ${slot.course}` : ""} is yours, but check the players (${parts.join("; ")}). ` +
               `Open ForeTees and make sure all ${cfg.want.partySize} names are in within 5 minutes or the club drops the booking!`);
           } else {
             await notify(cfg, "⛳ Tee time booked!",
-              `${target.iso} at ${slot.time}, all ${cfg.want.partySize} names confirmed from the roster. Screenshot saved.`);
+              `${target.iso} at ${slot.time}${slot.course ? ` on ${slot.course}` : ""}, all ${cfg.want.partySize} names confirmed from the roster. Screenshot saved.`);
           }
           return 0;
         }

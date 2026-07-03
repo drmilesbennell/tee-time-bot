@@ -7,6 +7,7 @@ export async function GET(req) {
     enabled: config.enabled !== false,
     daysOfWeek: config.want?.daysOfWeek ?? [],
     window: config.want?.timeWindows?.[0] ?? { start: "07:30", end: "10:00" },
+    courses: config.want?.courses ?? ["Ocean"],
     players: config.want?.players ?? [],
   });
 }
@@ -28,6 +29,8 @@ export async function POST(req) {
       end: String(body.window?.end ?? "10:00"),
     },
   ];
+  const courses = (body.courses ?? []).filter((c) => ["Ocean", "Dunes"].includes(c));
+  config.want.courses = courses.length ? courses : ["Ocean"];
   config.want.players = players;
   // The party is however many names are filled in.
   config.want.partySize = Math.min(Math.max(players.length, 1), 4);
