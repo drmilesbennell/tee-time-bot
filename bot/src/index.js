@@ -159,31 +159,45 @@ async function main() {
         return 0;
       }
 
-      for (const slot of ranked.slice(0, 3)) {
-        log(`Attempting ${slot.time}${slot.course ? ` on ${slot.course}` : ""}...`);
-        const result = await bookSlot(sheetPage, slot, cfg);
+      // Attempt only the single best slot per pass. Clicking a slot navigates
+      // into the booking form, which detaches every other slot locator we read
+      // this pass — so we refresh the sheet (top of the loop) before the next
+      // try instead of reusing stale locators.
+      const target1 = ranked[0];
+      if (target1) {
+        const label = `${target1.time}${target1.course ? ` on ${target1.course}` : ""}`;
+        log(`Attempting ${label}...`);
+        const result = await bookSlot(sheetPage, target1, cfg);
         if (result.success) {
           await dumpDebug(sheetPage, cfg, `booked-${target.iso}`);
-          const roster = result.players
-            .map((p) => `${p.name} (${p.how})`)
-            .join(", ");
-          log(`Booked ${slot.time}${slot.course ? ` on ${slot.course}` : ""}. Players: ${roster || "(none configured)"}`);
+          const roster = result.players.map((p) => `${p.name} (${p.how})`).join(", ");
+          log(`Booked ${label}. Players: ${roster || "(none configured)"}`);
           const failed = result.players.filter((p) => p.how === "failed");
           const typed = result.players.filter((p) => p.how === "typed");
           if (failed.length || typed.length) {
             const parts = [];
-            if (failed.length) parts.push(`no roster match, left as TBD: ${failed.map((p) => p.name).join(", ")}`);
+            if (failed.length) parts.push(`no roster match, left off: ${failed.map((p) => p.name).join(", ")}`);
             if (typed.length) parts.push(`typed but not confirmed against the roster: ${typed.map((p) => p.name).join(", ")}`);
             await notify(cfg, "⛳ Booked — VERIFY NAMES NOW",
-              `${target.iso} at ${slot.time}${slot.course ? ` on ${slot.course}` : ""} is yours, but check the players (${parts.join("; ")}). ` +
-              `Open ForeTees and make sure all ${cfg.want.partySize} names are in within 5 minutes or the club drops the booking!`);
+              `${target.iso} at ${label} is yours, but check the players (${parts.join("; ")}). ` +
+              `Open the tee sheet and make sure all ${cfg.want.partySize} names are in within 5 minutes or the club drops the booking!`);
           } else {
             await notify(cfg, "⛳ Tee time booked!",
-              `${target.iso} at ${slot.time}${slot.course ? ` on ${slot.course}` : ""}, all ${cfg.want.partySize} names confirmed from the roster. Screenshot saved.`);
+              `${target.iso} at ${label}, all ${cfg.want.partySize} names confirmed from the roster. Screenshot saved.`);
           }
           return 0;
         }
-        log(`${slot.time} slipped away (someone else got it, or the form didn't confirm). Next...`);
+        // We clicked Book Now but couldn't confirm — do NOT try another slot,
+        // that risks a double booking. Stop and ask for a manual check.
+        if (result.submitted) {
+          await dumpDebug(sheetPage, cfg, `unconfirmed-${target.iso}`);
+          log(`Submitted ${label} but couldn't confirm the reservation — stopping to avoid a double booking.`);
+          await notify(cfg, "⛳ CHECK BOOKING",
+            `Tried to book ${target.iso} at ${label} but couldn't read a confirmation. ` +
+            `Open the tee sheet now and check whether it went through (and finish/cancel it). Screenshot saved.`);
+          return 1;
+        }
+        log(`${label} slipped away (someone else grabbed it, or the form didn't open). Refreshing...`);
       }
 
       if (!slots.length && attempt === 3) {

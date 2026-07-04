@@ -96,18 +96,41 @@ export function lastNameOf(name) {
  * back to TBD rather than booking a stranger into the slot).
  */
 export function matchSuggestion(texts, name) {
-  const norm = (t) => t.toLowerCase().replace(/\s+/g, " ").trim();
+  const norm = (t) => t.toLowerCase().replace(/[.,]/g, " ").replace(/\s+/g, " ").trim();
   const want = norm(name);
+  const wantTokens = want.split(" ").filter(Boolean);
   const last = lastNameOf(name);
   if (!texts?.length) return -1;
 
   const full = texts.findIndex((t) => norm(t).includes(want));
   if (full !== -1) return full;
 
+  // Order-independent: config "Thompson, Patti" should match a suggestion
+  // rendered "Patti Thompson" — every name token present as a whole word.
+  if (wantTokens.length >= 2) {
+    const bySubset = texts.findIndex((t) => {
+      const tt = norm(t);
+      return wantTokens.every((tok) => new RegExp(`\\b${tok}\\b`).test(tt));
+    });
+    if (bySubset !== -1) return bySubset;
+  }
+
   const byLast = texts
     .map((t, i) => ({ t: norm(t), i }))
-    .filter(({ t }) => last && t.includes(last));
+    .filter(({ t }) => last && new RegExp(`\\b${last}\\b`).test(t));
   return byLast.length === 1 ? byLast[0].i : -1;
+}
+
+/**
+ * Do a form-displayed name ("Mark Thompson") and a config name
+ * ("Thompson, Mark") refer to the same person? Compares the set of name
+ * tokens, so word order and a "Last, First" comma don't matter.
+ */
+export function sameName(a, b) {
+  const toks = (s) =>
+    String(s).toLowerCase().replace(/[.,]/g, " ").split(/\s+/).filter(Boolean).sort().join(" ");
+  const ta = toks(a);
+  return ta.length > 0 && ta === toks(b);
 }
 
 /**
