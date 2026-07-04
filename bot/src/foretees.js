@@ -423,45 +423,23 @@ async function bookNorthstarForm(form, cfg, T) {
   // 3. Fill remaining names into empty rows (click "+ Member" to reveal the
   //    roster autocomplete for that row, then pick the matching member).
   for (const name of toEnter) {
-    const rows = form.locator("[id$='playersTable_data'] > tr");
-    const rowCount = await rows.count().catch(() => 0);
-    let placed = false;
-    for (let i = 0; i < rowCount; i++) {
-      const row = rows.nth(i);
-      const filled = await row.locator("[id$=':player_input']").first().inputValue({ timeout: 600 }).catch(() => "");
-      if (filled) continue; // row already has a player
+    const how = await enterMember(form, name, T);
+    report.push({ name, how });
+  }
 
-      const memberBtn = row.locator("a.player-type-member").first();
-      if (!(await memberBtn.isVisible().catch(() => false))) continue;
-      await memberBtn.click({ timeout: T }).catch(() => {});
-
-      const input = row.locator("[id$=':player_input']").first();
-      await input.waitFor({ state: "visible", timeout: T }).catch(() => {});
-      await input.click({ timeout: T }).catch(() => {});
-      await input.pressSequentially(lastNameOf(name), { delay: 25 }).catch(() => {});
-
-      const items = form.locator(".ui-autocomplete-panel:visible li.ui-autocomplete-item");
-      await items.first().waitFor({ state: "visible", timeout: 3000 }).catch(() => {});
-      const texts = await items.allInnerTexts().catch(() => []);
-      const idx = matchSuggestion(texts, name);
-      if (idx >= 0) {
-        await items.nth(idx).click({ timeout: T }).catch(() => {});
-        report.push({ name, how: "picked" });
-      } else {
-        // No confident roster match — don't book a stranger; leave the seat.
-        await input.fill("", { timeout: T }).catch(() => {});
-        report.push({ name, how: "failed" });
-      }
-      placed = true;
-      await sleep(300); // let the row's AJAX settle before the next name
-      break;
-    }
-    if (!placed) report.push({ name, how: "failed" });
+  // If a required player couldn't be entered, DON'T submit — the club rejects
+  // it (e.g. Ocean's 2-player minimum) and we'd leave a doomed 5-minute hold.
+  // Release the slot with Back instead and report which name failed.
+  const missing = report.filter((p) => p.how === "failed").map((p) => p.name);
+  if (missing.length) {
+    await releaseForm(form, T);
+    return { success: false, submitted: false, players: report, missing };
   }
 
   // 4. Book Now.
   const book = form.locator("a[id$='bookTeeTimeAction'], a:has-text('Book Now')").first();
   if (!(await book.isVisible().catch(() => false))) {
+    await releaseForm(form, T);
     return { success: false, submitted: false, players: report };
   }
   await book.click({ timeout: T }).catch(() => {});
@@ -481,6 +459,66 @@ async function bookNorthstarForm(form, cfg, T) {
   const formGone = (await form.locator("[id$='playersTable_data']").count().catch(() => 1)) === 0;
   const success = confirmed || formGone;
   return { success, submitted: true, players: report };
+}
+
+/**
+ * Enter one member into the first empty player row: click "+ Member" to
+ * reveal that row's roster autocomplete, type the last name, and pick the
+ * matching member from the row's own suggestion panel. Logs the suggestions
+ * it saw (they only exist server-side at runtime) and verifies the pick
+ * actually landed in the field. Returns "picked" or "failed".
+ */
+async function enterMember(form, name, T) {
+  const rows = form.locator("[id$='playersTable_data'] > tr");
+  const rowCount = await rows.count().catch(() => 0);
+  for (let i = 0; i < rowCount; i++) {
+    const row = rows.nth(i);
+    const filled = await row.locator("[id$=':player_input']").first().inputValue({ timeout: 600 }).catch(() => "");
+    if (filled) continue; // row already has a player
+
+    const memberBtn = row.locator("a.player-type-member").first();
+    if (!(await memberBtn.isVisible().catch(() => false))) continue;
+    await memberBtn.click({ timeout: T }).catch(() => {});
+
+    const input = row.locator("[id$=':player_input']").first();
+    await input.waitFor({ state: "visible", timeout: T }).catch(() => {});
+    await input.click({ timeout: T }).catch(() => {});
+    await input.pressSequentially(lastNameOf(name), { delay: 40 }).catch(() => {});
+
+    // The suggestions render into THIS row's panel (role=listbox), server-side.
+    const panel = row.locator("[id$=':player_panel']").first();
+    const itemSel = "li.ui-autocomplete-item, [role='option'], li";
+    let texts = [];
+    for (let tries = 0; tries < 14; tries++) {
+      await sleep(250);
+      texts = (await panel.locator(itemSel).allInnerTexts().catch(() => []))
+        .map((s) => s.replace(/\s+/g, " ").trim())
+        .filter(Boolean);
+      if (texts.length) break;
+    }
+    console.log(`[book] "${name}" → ${texts.length} suggestion(s): ${JSON.stringify(texts.slice(0, 8))}`);
+
+    const idx = matchSuggestion(texts, name);
+    if (idx < 0) {
+      await input.fill("", { timeout: T }).catch(() => {});
+      return "failed";
+    }
+    await panel.locator(itemSel).nth(idx).click({ timeout: T }).catch(() => {});
+    await sleep(600); // selection fires an AJAX update of the row
+    const landed = await row.locator("[id$=':player_input']").first().inputValue({ timeout: T }).catch(() => "");
+    console.log(`[book] "${name}" selected → field now: ${JSON.stringify(landed)}`);
+    return landed ? "picked" : "failed";
+  }
+  return "failed"; // no empty row to place them in
+}
+
+/** Cancel an in-progress reservation so it doesn't sit as a 5-minute hold. */
+async function releaseForm(form, T) {
+  const back = form.locator("a:has-text('Back'), button:has-text('Back')").first();
+  if (await back.isVisible().catch(() => false)) {
+    await back.click({ timeout: T }).catch(() => {});
+    await sleep(800);
+  }
 }
 
 async function isPartySize(form, n) {

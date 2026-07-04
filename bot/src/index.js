@@ -187,6 +187,16 @@ async function main() {
           }
           return 0;
         }
+        // Couldn't enter a required player, so we released the slot without
+        // booking (no wasted hold). Stop and tell the user which name failed.
+        if (result.missing?.length) {
+          await dumpDebug(sheetPage, cfg, `noname-${target.iso}`);
+          log(`Couldn't enter ${result.missing.join(", ")} from the roster — released ${label} without booking.`);
+          await notify(cfg, "⛳ Couldn't book — name not found",
+            `${target.iso} at ${label}: couldn't find ${result.missing.join(", ")} in the club roster autocomplete. ` +
+            `Check the exact spelling in config (last name is what's searched). Nothing was reserved.`);
+          return 1;
+        }
         // We clicked Book Now but couldn't confirm — do NOT try another slot,
         // that risks a double booking. Stop and ask for a manual check.
         if (result.submitted) {
