@@ -14,9 +14,7 @@
     "courses": ["Ocean"],
     "players": [
       "Thompson, Mark",
-      "Thompson, Patti",
-      "Niccoli, Courtney",
-      "Niccoli, Anthony"
+      "Thompson, Patti"
     ],
     "timeWindows": [{ "start": "07:00", "end": "10:00" }],
     "prefer": "earliest"
