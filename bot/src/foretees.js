@@ -392,35 +392,43 @@ async function bookNorthstarForm(form, cfg, T) {
 
   // 1. Number of players — a radio-button group; the digit lives in a
   //    span.ui-button-text (distinct from the hidden datepicker's day cells).
-  const sizeBtn = form
-    .locator("span.ui-button-text", { hasText: new RegExp(`^\\s*${partySize}\\s*$`) })
-    .first();
-  if (await sizeBtn.count().catch(() => 0)) {
+  //    Verify the radio actually took, and retry, before touching anything.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (await isPartySize(form, partySize)) break;
+    const sizeBtn = form
+      .locator("span.ui-button-text", { hasText: new RegExp(`^\\s*${partySize}\\s*$`) })
+      .first();
+    if (!(await sizeBtn.count().catch(() => 0))) break;
     await sizeBtn.click({ timeout: T }).catch(() => {});
-    await sleep(700); // rows re-render over AJAX
+    await sleep(800); // players table rebuilds over AJAX
   }
+
+  // 2. The club auto-adds the logged-in member as Player 1 — but a beat after
+  //    the table renders. Wait for a filled row so we don't mistake the gap
+  //    for "empty" and try to re-add that member (which collides and resets
+  //    the form to a single player). The header also names them ("Welcome
+  //    Mark Thompson!") — treat that person as already in the reservation.
+  const me = await loggedInMemberName(form);
+  await waitForAnyPlayer(form, 6000);
 
   // Snapshot the form as the bot sees it (useful while this is still new).
   await dumpDebug(form, cfg, "booking-form").catch(() => {});
 
-  // 2. Names already on the form (the auto-added logged-in member) are done.
-  const existing = await form
-    .locator("[id$=':player_input']")
-    .evaluateAll((els) => els.map((e) => e.value || "").filter(Boolean))
-    .catch(() => []);
-  const already = wanted.filter((n) => existing.some((v) => sameName(v, n)));
+  const existing = await filledPlayerNames(form);
+  const isPresent = (n) => (me && sameName(me, n)) || existing.some((v) => sameName(v, n));
+  const already = wanted.filter(isPresent);
   for (const n of already) report.push({ name: n, how: "already-listed" });
-  const toEnter = wanted.filter((n) => !already.includes(n));
+  const toEnter = wanted.filter((n) => !isPresent(n));
 
-  // 3. Fill remaining names into empty rows.
-  const rows = form.locator("[id$='playersTable_data'] > tr");
-  const rowCount = await rows.count().catch(() => 0);
+  // 3. Fill remaining names into empty rows (click "+ Member" to reveal the
+  //    roster autocomplete for that row, then pick the matching member).
   for (const name of toEnter) {
+    const rows = form.locator("[id$='playersTable_data'] > tr");
+    const rowCount = await rows.count().catch(() => 0);
     let placed = false;
     for (let i = 0; i < rowCount; i++) {
       const row = rows.nth(i);
-      const rowInput = row.locator("[id$=':player_input']").first();
-      const filled = await rowInput.inputValue({ timeout: 800 }).catch(() => "");
+      const filled = await row.locator("[id$=':player_input']").first().inputValue({ timeout: 600 }).catch(() => "");
       if (filled) continue; // row already has a player
 
       const memberBtn = row.locator("a.player-type-member").first();
@@ -445,7 +453,7 @@ async function bookNorthstarForm(form, cfg, T) {
         report.push({ name, how: "failed" });
       }
       placed = true;
-      await sleep(250); // let the row's AJAX settle before the next name
+      await sleep(300); // let the row's AJAX settle before the next name
       break;
     }
     if (!placed) report.push({ name, how: "failed" });
@@ -457,17 +465,58 @@ async function bookNorthstarForm(form, cfg, T) {
     return { success: false, submitted: false, players: report };
   }
   await book.click({ timeout: T }).catch(() => {});
-  await sleep(1800);
+  await sleep(2000);
 
-  // Confirm: the players form goes away and/or a confirmation shows.
+  // 5. Read the outcome. The club shows a "Restriction:" dialog for problems
+  //    (e.g. "Minimum 2 players are necessary…") — surface its text so the
+  //    caller knows this was a hard rejection, not just an unread confirmation.
   await dumpDebug(form, cfg, "after-book").catch(() => {});
+  const restriction = await readRestriction(form);
+  if (restriction) {
+    return { success: false, submitted: true, players: report, restriction };
+  }
   const bodyText = await form.locator("body").innerText().catch(() => "");
-  const errorish = /error|not available|already booked|failed|invalid|please\s|required/i.test(bodyText);
   const confirmed =
     /confirm(ed|ation)|success|has been booked|reservation (created|number)|your tee time|current registrations/i.test(bodyText);
   const formGone = (await form.locator("[id$='playersTable_data']").count().catch(() => 1)) === 0;
-  const success = confirmed || (formGone && !errorish);
+  const success = confirmed || formGone;
   return { success, submitted: true, players: report };
+}
+
+async function isPartySize(form, n) {
+  return (await form
+    .locator(`input[type='radio'][value='${n}']`)
+    .first()
+    .isChecked()
+    .catch(() => false));
+}
+
+async function loggedInMemberName(form) {
+  const txt = await form.locator("text=/welcome\\s+\\S/i").first().innerText().catch(() => "");
+  const m = txt.match(/welcome\s+(.+?)\s*!?$/i);
+  return m ? m[1].trim() : "";
+}
+
+async function filledPlayerNames(form) {
+  return form
+    .locator("[id$=':player_input']")
+    .evaluateAll((els) => els.map((e) => (e.value || "").trim()).filter(Boolean))
+    .catch(() => []);
+}
+
+async function waitForAnyPlayer(form, ms) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if ((await filledPlayerNames(form)).length) return;
+    await sleep(300);
+  }
+}
+
+async function readRestriction(form) {
+  const dlg = form.locator(".ui-dialog:visible", { hasText: /restriction|minimum|not allowed|cannot/i }).first();
+  if (!(await dlg.isVisible().catch(() => false))) return "";
+  const label = (await dlg.locator("dt label, .ui-datalist-item, p").first().innerText().catch(() => "")).trim();
+  return label || (await dlg.innerText().catch(() => "")).replace(/\s+/g, " ").trim().slice(0, 200);
 }
 
 /**

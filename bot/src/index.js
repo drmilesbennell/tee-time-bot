@@ -191,10 +191,16 @@ async function main() {
         // that risks a double booking. Stop and ask for a manual check.
         if (result.submitted) {
           await dumpDebug(sheetPage, cfg, `unconfirmed-${target.iso}`);
-          log(`Submitted ${label} but couldn't confirm the reservation — stopping to avoid a double booking.`);
-          await notify(cfg, "⛳ CHECK BOOKING",
-            `Tried to book ${target.iso} at ${label} but couldn't read a confirmation. ` +
-            `Open the tee sheet now and check whether it went through (and finish/cancel it). Screenshot saved.`);
+          if (result.restriction) {
+            log(`${label} rejected by the club: "${result.restriction}"`);
+            await notify(cfg, "⛳ Booking rejected",
+              `${target.iso} at ${label} wouldn't book: "${result.restriction}". Nothing was reserved.`);
+          } else {
+            log(`Submitted ${label} but couldn't confirm the reservation — stopping to avoid a double booking.`);
+            await notify(cfg, "⛳ CHECK BOOKING",
+              `Tried to book ${target.iso} at ${label} but couldn't read a confirmation. ` +
+              `Open the tee sheet now and check whether it went through (and finish/cancel it). Screenshot saved.`);
+          }
           return 1;
         }
         log(`${label} slipped away (someone else grabbed it, or the form didn't open). Refreshing...`);
