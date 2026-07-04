@@ -10,7 +10,7 @@
 
   "want": {
     "daysOfWeek": ["Thu"],
-    "partySize": 4,
+    "partySize": 2,
     "courses": ["Ocean"],
     "players": [
       "Thompson, Mark",
