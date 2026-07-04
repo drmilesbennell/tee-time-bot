@@ -142,9 +142,18 @@ async function main() {
             : ""));
 
       if (DRY) {
+        const open = slots.filter((s) => s.openSpots > 0);
+        if (open.length) {
+          log(`Open seats seen: ${open
+            .map((s) => `${s.time}${s.course ? ` ${s.course}` : ""} (${s.openSpots} open)`)
+            .join(", ")}`);
+        }
         if (!slots.length) {
           const dir = await dumpDebug(sheetPage, cfg, "dry-run-empty");
           log(`No times detected — sheet snapshot saved to ${dir}/ so selectors can be tuned.`);
+        } else if (!ranked.length) {
+          await dumpDebug(sheetPage, cfg, "dry-run-no-match");
+          log(`Nothing bookable for a party of ${cfg.want.partySize} in your window${cfg.want.courses?.length ? ` on ${cfg.want.courses.join("/")}` : ""} — sheet snapshot saved.`);
         }
         log("Dry run complete. No booking attempted.");
         return 0;
