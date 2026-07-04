@@ -6,7 +6,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { sleep } from "./clock.js";
-import { matchSuggestion, lastNameOf } from "./prefs.js";
+import { matchSuggestion, lastNameOf, sameName } from "./prefs.js";
 
 const TIME_RE = /^\s*\d{1,2}:\d{2}\s*(?:AM|PM|A|P)?\s*$/i;
 
@@ -322,62 +322,152 @@ export async function readSlots(page, cfg) {
  * "typed" (no autocomplete seen; text left in the box) | "tbd-fallback".
  */
 export async function bookSlot(page, slot, cfg) {
-  const sel = cfg.selectors ?? {};
-  const partySize = cfg.want?.partySize ?? 4;
+  const T = 8000; // hard cap on any single booking action — never hang 30s
 
-  // The booking form may open as a popup window or in-page.
-  const popupPromise = page.context().waitForEvent("page", { timeout: 4000 }).catch(() => null);
-  await slot.locator.click();
+  // Open the slot (Northstar books in-page; older skins may pop a window).
+  const popupPromise = page.context().waitForEvent("page", { timeout: 3000 }).catch(() => null);
+  try {
+    await slot.locator.click({ timeout: T });
+  } catch {
+    return { success: false, submitted: false, players: [] };
+  }
   const popup = await popupPromise;
   const form = popup ?? page;
   await form.waitForLoadState("domcontentloaded").catch(() => {});
-  await sleep(300);
+  await sleep(400);
 
-  // Northstar booking form ("Tee Time" / Player Information): a 1–4 PLAYERS
-  // selector controls how many name rows exist — pick our party size first.
-  if (await form.locator("text=/player information/i").count().catch(() => 0)) {
-    const sizeBtn = form.getByText(String(partySize), { exact: true }).first();
-    if (await sizeBtn.isVisible().catch(() => false)) {
-      await sizeBtn.click().catch(() => {});
-      await sleep(600); // rows render over AJAX
-    }
-    // First live look at this form — save it so selectors can be tuned.
-    await dumpDebug(form, cfg, "booking-form").catch(() => {});
+  // Northstar booking form ("Player Information" / players table).
+  const isNorthstar =
+    (await form.locator("[id$='playersTable_data']").count().catch(() => 0)) > 0 ||
+    (await form.locator("text=/player information/i").count().catch(() => 0)) > 0;
+  if (isNorthstar) {
+    return bookNorthstarForm(form, cfg, T);
   }
 
+  // ---- Generic/legacy fallback (older ForeTees skins) ----
+  const sel = cfg.selectors ?? {};
+  const partySize = cfg.want?.partySize ?? 4;
   const players = await fillPlayers(form, cfg);
-
-  // Any seat we couldn't put a name in gets TBD so the slot is still held.
   const unfilled = partySize - players.filter((p) => p.how !== "failed").length;
   const tbd = form.locator(sel.tbdButton || "text=/^TBD$/i");
   for (let i = 0; i < Math.max(unfilled, 0); i++) {
     const btn = tbd.first();
     if (!(await btn.isVisible().catch(() => false))) break;
-    await btn.click().catch(() => {});
+    await btn.click({ timeout: T }).catch(() => {});
     await sleep(120);
   }
-
   const submit = form
     .locator(sel.bookSubmit || "text=/submit|\\bbook\\b|confirm|reserve/i")
     .first();
   if (!(await submit.isVisible().catch(() => false))) {
     if (popup) await popup.close().catch(() => {});
-    return { success: false, players };
+    return { success: false, submitted: false, players };
   }
-  await submit.click();
+  await submit.click({ timeout: T }).catch(() => {});
   await sleep(1200);
-
-  // Some skins ask "are you sure?" — accept anything that looks like yes.
   const confirmBtn = form.locator("text=/^(yes|ok|continue|confirm)$/i").first();
   if (await confirmBtn.isVisible().catch(() => false)) {
-    await confirmBtn.click().catch(() => {});
+    await confirmBtn.click({ timeout: T }).catch(() => {});
     await sleep(1200);
   }
-
   const bodyText = await form.locator("body").innerText().catch(() => "");
   const success = /confirm(ed|ation)|success|has been booked|your tee time/i.test(bodyText);
   if (popup && !success) await popup.close().catch(() => {});
-  return { success, players };
+  return { success, submitted: true, players };
+}
+
+/**
+ * Book on the Northstar "Player Information" form. The logged-in member is
+ * auto-added as Player 1; each additional seat is an empty row where you
+ * click "+ Member", type a last name, and pick from the roster autocomplete.
+ *
+ * Returns { success, submitted, players }. `submitted` means Book Now was
+ * clicked — if we then can't confirm, the caller must NOT try another slot
+ * (that could double-book); it flags for manual verification instead.
+ */
+async function bookNorthstarForm(form, cfg, T) {
+  const partySize = cfg.want?.partySize ?? 4;
+  const wanted = (cfg.want?.players ?? []).map(String);
+  const report = [];
+
+  // 1. Number of players — a radio-button group; the digit lives in a
+  //    span.ui-button-text (distinct from the hidden datepicker's day cells).
+  const sizeBtn = form
+    .locator("span.ui-button-text", { hasText: new RegExp(`^\\s*${partySize}\\s*$`) })
+    .first();
+  if (await sizeBtn.count().catch(() => 0)) {
+    await sizeBtn.click({ timeout: T }).catch(() => {});
+    await sleep(700); // rows re-render over AJAX
+  }
+
+  // Snapshot the form as the bot sees it (useful while this is still new).
+  await dumpDebug(form, cfg, "booking-form").catch(() => {});
+
+  // 2. Names already on the form (the auto-added logged-in member) are done.
+  const existing = await form
+    .locator("[id$=':player_input']")
+    .evaluateAll((els) => els.map((e) => e.value || "").filter(Boolean))
+    .catch(() => []);
+  const already = wanted.filter((n) => existing.some((v) => sameName(v, n)));
+  for (const n of already) report.push({ name: n, how: "already-listed" });
+  const toEnter = wanted.filter((n) => !already.includes(n));
+
+  // 3. Fill remaining names into empty rows.
+  const rows = form.locator("[id$='playersTable_data'] > tr");
+  const rowCount = await rows.count().catch(() => 0);
+  for (const name of toEnter) {
+    let placed = false;
+    for (let i = 0; i < rowCount; i++) {
+      const row = rows.nth(i);
+      const rowInput = row.locator("[id$=':player_input']").first();
+      const filled = await rowInput.inputValue({ timeout: 800 }).catch(() => "");
+      if (filled) continue; // row already has a player
+
+      const memberBtn = row.locator("a.player-type-member").first();
+      if (!(await memberBtn.isVisible().catch(() => false))) continue;
+      await memberBtn.click({ timeout: T }).catch(() => {});
+
+      const input = row.locator("[id$=':player_input']").first();
+      await input.waitFor({ state: "visible", timeout: T }).catch(() => {});
+      await input.click({ timeout: T }).catch(() => {});
+      await input.pressSequentially(lastNameOf(name), { delay: 25 }).catch(() => {});
+
+      const items = form.locator(".ui-autocomplete-panel:visible li.ui-autocomplete-item");
+      await items.first().waitFor({ state: "visible", timeout: 3000 }).catch(() => {});
+      const texts = await items.allInnerTexts().catch(() => []);
+      const idx = matchSuggestion(texts, name);
+      if (idx >= 0) {
+        await items.nth(idx).click({ timeout: T }).catch(() => {});
+        report.push({ name, how: "picked" });
+      } else {
+        // No confident roster match — don't book a stranger; leave the seat.
+        await input.fill("", { timeout: T }).catch(() => {});
+        report.push({ name, how: "failed" });
+      }
+      placed = true;
+      await sleep(250); // let the row's AJAX settle before the next name
+      break;
+    }
+    if (!placed) report.push({ name, how: "failed" });
+  }
+
+  // 4. Book Now.
+  const book = form.locator("a[id$='bookTeeTimeAction'], a:has-text('Book Now')").first();
+  if (!(await book.isVisible().catch(() => false))) {
+    return { success: false, submitted: false, players: report };
+  }
+  await book.click({ timeout: T }).catch(() => {});
+  await sleep(1800);
+
+  // Confirm: the players form goes away and/or a confirmation shows.
+  await dumpDebug(form, cfg, "after-book").catch(() => {});
+  const bodyText = await form.locator("body").innerText().catch(() => "");
+  const errorish = /error|not available|already booked|failed|invalid|please\s|required/i.test(bodyText);
+  const confirmed =
+    /confirm(ed|ation)|success|has been booked|reservation (created|number)|your tee time|current registrations/i.test(bodyText);
+  const formGone = (await form.locator("[id$='playersTable_data']").count().catch(() => 1)) === 0;
+  const success = confirmed || (formGone && !errorish);
+  return { success, submitted: true, players: report };
 }
 
 /**
